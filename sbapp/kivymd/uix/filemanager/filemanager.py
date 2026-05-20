@@ -162,7 +162,8 @@ from kivymd.uix.behaviors import CircularRippleBehavior
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.button import MDFloatingActionButton
 from kivymd.uix.fitimage import FitImage
-from kivymd.uix.list import BaseListItem
+from kivymd.uix.list import BaseListItem, IconLeftWidget, OneLineIconListItem
+from kivymd.uix.dialog import MDDialog
 from kivymd.uix.relativelayout import MDRelativeLayout
 
 with open(
@@ -194,6 +195,10 @@ class ModifiedOneLineIconListItem(BaseListItem):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.height = dp(48)
+
+
+class DialogItem(OneLineIconListItem):
+    pass
 
 
 class MDFileManager(MDRelativeLayout):
@@ -819,3 +824,42 @@ class MDFileManager(MDRelativeLayout):
             sorted_files.reverse()
 
         return sorted_files
+
+    def show_sort_menu(self):
+        def sort_name(sender):
+            dialog.dismiss()
+            self.sort_by = "name"
+            self.sort_by_desc = False
+            self.show(self.current_path)
+
+        def sort_name_rev(sender):
+            dialog.dismiss()
+            self.sort_by = "name"
+            self.sort_by_desc = True
+            self.show(self.current_path)
+
+        def sort_date(sender):
+            dialog.dismiss()
+            self.sort_by = "date"
+            self.sort_by_desc = False
+            self.show(self.current_path)
+
+        def sort_date_rev(sender):
+            dialog.dismiss()
+            self.sort_by = "date"
+            self.sort_by_desc = True
+            self.show(self.current_path)
+
+        ss = int(dp(18))
+        ad_items = [
+            DialogItem(text="[size="+str(ss)+"]Name[/size]", on_release=sort_name),
+            DialogItem(text="[size="+str(ss)+"]Reverse Name[/size]", on_release=sort_name_rev),
+            DialogItem(text="[size="+str(ss)+"]Date[/size]", on_release=sort_date),
+            DialogItem(text="[size="+str(ss)+"]Reverse Date[/size]", on_release=sort_date_rev),
+        ]
+        dialog = MDDialog(
+            title="Sort by:",
+            type="simple",
+            items=ad_items,
+        )
+        dialog.open()

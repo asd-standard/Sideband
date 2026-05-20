@@ -2313,8 +2313,13 @@ class SidebandApp(MDApp):
         self.update_message_widgets()
 
     def message_fm_got_path(self, path):
-        self.message_fm_exited()
         fbn = os.path.basename(path)
+
+        if self.attach_type in ["lbimg", "defimg", "hqimg"]:
+            self.message_preview_image(path, fbn)
+            return
+
+        self.message_fm_exited()
         try:
             tf = open(path, "rb")
             tf.close()
@@ -2341,6 +2346,81 @@ class SidebandApp(MDApp):
         self.update_message_widgets()
 
 
+    def message_preview_image(self, path, fbn):
+        try:
+            im = PilImage.open(path)
+            im.verify()
+        except Exception as e:
+            ok_button = MDRectangleFlatButton(text="OK", font_size=dp(18))
+            err_dialog = MDDialog(
+                title="Attachment Error",
+                text="Could not open image:\n\n[i]"+str(e)+"[/i]",
+                buttons=[ ok_button ],
+            )
+            ok_button.bind(on_release=err_dialog.dismiss)
+            err_dialog.open()
+            return
+
+        from kivy.uix.image import Image as KivyImage
+        from kivymd.uix.boxlayout import MDBoxLayout
+        from kivymd.uix.label import MDLabel
+
+        content = MDBoxLayout(
+            orientation="vertical",
+            adaptive_height=True,
+            padding=dp(12),
+            spacing=dp(12),
+        )
+
+        img = KivyImage(
+            source=path,
+            size_hint=(1, None),
+            height=dp(280),
+            allow_stretch=True,
+            keep_ratio=True,
+        )
+        content.add_widget(img)
+
+        label = MDLabel(
+            text="[size=14]"+fbn+"[/size]",
+            adaptive_height=True,
+            halign="center",
+        )
+        content.add_widget(label)
+
+        attach_button = MDRectangleFlatButton(
+            text="Attach",
+            font_size=dp(18),
+            theme_text_color="Custom",
+            line_color=self.color_accept,
+            text_color=self.color_accept,
+        )
+        cancel_button = MDRectangleFlatButton(text="Cancel", font_size=dp(18))
+
+        dialog = MDDialog(
+            title="Attach Image?",
+            type="custom",
+            content_cls=content,
+            buttons=[ attach_button, cancel_button ],
+        )
+
+        def do_attach(sender):
+            dialog.dismiss()
+            self.message_fm_exited()
+            self.attach_path = path
+            if self.outbound_mode_command:
+                self.outbound_mode_reset()
+            toast("Attached \""+fbn+"\"")
+            self.update_message_widgets()
+
+        def do_cancel(sender):
+            dialog.dismiss()
+
+        attach_button.bind(on_release=do_attach)
+        cancel_button.bind(on_release=do_cancel)
+        dialog.open()
+
+
     def message_fm_exited(self, *args):
         self.manager_open = False
         if self.file_manager != None:
@@ -2363,12 +2443,14 @@ class SidebandApp(MDApp):
                     self.file_manager = MDFileManager(
                         exit_manager=self.message_fm_exited,
                         select_path=self.message_fm_got_path,
+                        sort_by="date",
                         # Current KivyMD preview implementation is too slow to be reliable on Android
                         preview=False)
                 else:
                     self.file_manager = MDFileManager(
                         exit_manager=self.message_fm_exited,
                         select_path=self.message_fm_got_path,
+                        sort_by="date",
                         preview=False)
 
                 # self.file_manager.ext = []
