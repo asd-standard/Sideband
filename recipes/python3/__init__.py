@@ -190,6 +190,9 @@ class Python3Recipe(TargetPythonRecipe):
     def link_root(self, arch_name):
         return join(self.get_build_dir(arch_name), 'android-build')
 
+    def get_python_root(self, arch):
+        return join(self.get_build_dir(arch.arch), 'android-build', 'android-root')
+
     def should_build(self, arch):
         return not Path(self.link_root(arch.arch), self._libpython).is_file()
 
@@ -312,8 +315,8 @@ class Python3Recipe(TargetPythonRecipe):
         ensure_dir(build_dir)
 
         # TODO: Get these dynamically, like bpo-30386 does
-        sys_prefix = '/usr/local'
-        sys_exec_prefix = '/usr/local'
+        sys_prefix = join(build_dir, "android-root")
+        sys_exec_prefix = join(build_dir, "android-root")
 
         env = self.get_recipe_env(arch)
         env = self.set_libs_flags(env, arch)
@@ -324,6 +327,7 @@ class Python3Recipe(TargetPythonRecipe):
 
         with current_directory(build_dir):
             if not exists('config.status'):
+                ensure_dir(sys_prefix)
                 shprint(
                     sh.Command(join(recipe_build_dir, 'configure')),
                     *(' '.join(self.configure_args).format(
@@ -345,6 +349,7 @@ class Python3Recipe(TargetPythonRecipe):
                 'INSTSONAME={lib_name}'.format(lib_name=self._libpython),
                 _env=env
             )
+            shprint(sh.make, 'install', _env=env)
 
             # TODO: Look into passing the path to pyconfig.h in a
             # better way, although this is probably acceptable

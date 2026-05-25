@@ -31,6 +31,13 @@ class Codec2Recipe(Recipe):
     def build_arch(self, arch):        
         with current_directory(self.get_build_dir(arch.arch)):
             env = self.get_recipe_env(arch)
+
+            # Build generate_codebook natively for the host (must run on x86_64)
+            shprint(sh.mkdir, "-p", "build_android/src")
+            native_env = {"PATH": os.environ["PATH"]}
+            shprint(sh.Command('gcc'), '-o', 'build_android/src/generate_codebook',
+                    'src/generate_codebook.c', '-lm', _env=native_env)
+
             flags = [
                 "..",
                 "--log-level=TRACE",
@@ -38,10 +45,11 @@ class Codec2Recipe(Recipe):
                 "-DCMAKE_BUILD_TYPE=Release",
             ]
 
-            mkdir = sh.mkdir("-p", "build_android")
-            # cd = sh.cd("build_android")
+            shprint(sh.mkdir, "-p", "build_android")
             os.chdir("build_android")
             cmake = sh.Command('cmake')
+
+            env['PATH'] = join(os.getcwd(), 'src') + ':' + env.get('PATH', os.environ.get('PATH', ''))
 
             shprint(cmake, *flags, _env=env)
             shprint(sh.make, _env=env)

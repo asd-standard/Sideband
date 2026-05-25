@@ -9,6 +9,7 @@ class PyCodec2Recipe(CythonRecipe):
     # src_filename = "../../../pycodec2"
     depends = ["setuptools", "numpy", "Cython", "codec2"]
     call_hostpython_via_targetpython = False
+    hostpython_prerequisites = ["numpy"]
 
     def get_recipe_env(self, arch, with_flags_in_cc=True):
         """
@@ -25,6 +26,7 @@ class PyCodec2Recipe(CythonRecipe):
         return env
 
     def build_arch(self, arch):
+        self.install_hostpython_prerequisites()
         super().build_arch(arch)
         with current_directory(self.get_build_dir(arch.arch)):
             pass
