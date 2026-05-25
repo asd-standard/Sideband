@@ -105,8 +105,12 @@ class HostPython3Recipe(Recipe):
         return join(self.site_root, self.site_dir, "bin")
 
     @property
+    def local_dir(self):
+        return join(self.site_root, "usr/local/")
+
+    @property
     def local_bin(self):
-        return join(self.site_root, "usr/local/bin/")
+        return join(self.local_dir, "bin")
 
     @property
     def site_dir(self):
@@ -115,6 +119,27 @@ class HostPython3Recipe(Recipe):
             self.site_root,
             f"usr/local/lib/python{p_version.major}.{p_version.minor}/site-packages/"
         )
+
+    @property
+    def _pip(self):
+        return join(self.local_bin, "pip3")
+
+    @property
+    def pip(self):
+        return sh.Command(self._pip)
+
+    def fix_pip_shebangs(self):
+        if not os.path.exists(self.local_bin):
+            return
+        for filename in os.listdir(self.local_bin):
+            if not filename.startswith("pip"):
+                continue
+            pip_path = os.path.join(self.local_bin, filename)
+            with open(pip_path, "rb") as file:
+                file_lines = file.read().splitlines()
+            file_lines[0] = f"#!{self.python_exe}".encode()
+            with open(pip_path, "wb") as file:
+                file.write(b"\n".join(file_lines) + b"\n")
 
     def build_arch(self, arch):
         env = self.get_recipe_env(arch)
@@ -128,34 +153,33 @@ class HostPython3Recipe(Recipe):
         # Configure the build
         build_configured = False
         with current_directory(build_dir):
-            if not Path('config.status').exists():
-                shprint(sh.Command(join(recipe_build_dir, 'configure')), _env=env)
+            if not Path("config.status").exists():
+                shprint(
+                    sh.Command(join(recipe_build_dir, "configure")),
+                    "--prefix",
+                    self.local_dir,
+                    _env=env,
+                )
                 build_configured = True
 
         with current_directory(recipe_build_dir):
-            # Create the Setup file. This copying from Setup.dist is
-            # the normal and expected procedure before Python 3.8, but
-            # after this the file with default options is already named "Setup"
-            setup_dist_location = join('Modules', 'Setup.dist')
+            # Create the Setup file
+            setup_dist_location = join("Modules", "Setup.dist")
             if Path(setup_dist_location).exists():
-                shprint(sh.cp, setup_dist_location,
-                        join(build_dir, 'Modules', 'Setup'))
+                shprint(sh.cp, setup_dist_location, join(build_dir, "Modules", "Setup"))
             else:
-                # Check the expected file does exist
-                setup_location = join('Modules', 'Setup')
+                setup_location = join("Modules", "Setup")
                 if not Path(setup_location).exists():
-                    raise BuildInterruptingException(
-                        SETUP_DIST_NOT_FIND_MESSAGE
-                    )
+                    raise BuildInterruptingException(SETUP_DIST_NOT_FIND_MESSAGE)
 
-            shprint(sh.make, '-j', str(cpu_count()), '-C', build_dir, _env=env)
+            shprint(sh.make, "-j", str(cpu_count()), "-C", build_dir, _env=env)
 
-            # make a copy of the python executable giving it the name we want,
-            # because we got different python's executable names depending on
-            # the fs being case-insensitive (Mac OS X, Cygwin...) or
-            # case-sensitive (linux)...so this way we will have an unique name
-            # for our hostpython, regarding the used fs
-            for exe_name in ['python.exe', 'python']:
+        with current_directory(build_dir):
+            shprint(sh.make, "install", _env=env)
+
+        with current_directory(recipe_build_dir):
+            # make a copy of the python executable
+            for exe_name in ["python.exe", "python"]:
                 exe = join(self.get_path_to_python(), exe_name)
                 if Path(exe).is_file():
                     shprint(sh.cp, exe, self.python_exe)
@@ -163,6 +187,7 @@ class HostPython3Recipe(Recipe):
 
         ensure_dir(self.site_root)
         self.ctx.hostpython = self.python_exe
+
         if build_configured:
             print("RUNNING ENSUREPIP:"+self.site_root)
             shprint(
@@ -170,6 +195,8 @@ class HostPython3Recipe(Recipe):
                 _env={"HOME": "/tmp"}
             )
             print("RAN ENSUREPIP")
+            self.fix_pip_shebangs()
+            shprint(sh.Command(self._pip), "install", "pip==24.0", "-q", "--no-deps", _env={"HOME": "/tmp"})
 
 
 recipe = HostPython3Recipe()

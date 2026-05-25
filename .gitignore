@@ -37,3 +37,6 @@ LXST
 environment
 archived_build_tools
 .gradle
+environment.yml
+BUILDING.md
+BUILDING-DIFF.md

@@ -97,6 +97,7 @@ class Messages():
         self.added_messages = 0
         self.latest_message_timestamp = None
         self.earliest_message_timestamp = time.time()
+        self.reply_to_content = None
         self.loading_earlier_messages = False
         self.list = None
         self.widgets = []
@@ -116,6 +117,13 @@ class Messages():
         self.widgets = []
 
         self.update()
+
+
+    def reply_clear_action(self):
+        self.reply_to_content = None
+        self.ids.reply_indicator.opacity = 0
+        self.ids.reply_indicator.height = dp(0)
+
 
     def load_more(self, dt):
         for new_message in self.app.sideband.list_messages(self.context_dest, before=self.earliest_message_timestamp,limit=5):
@@ -924,6 +932,14 @@ class Messages():
 
                     return x
 
+                def gen_reply(msgtxt, item):
+                    def x():
+                        self.reply_to_content = msgtxt
+                        self.ids.reply_indicator.opacity = 1
+                        self.ids.reply_indicator.height = dp(44)
+                        item.dmenu.dismiss()
+                    return x
+
                 def gen_save_image(item):
                     if RNS.vendor.platformutils.is_android():
                         def x():
@@ -1256,6 +1272,12 @@ class Messages():
                             retry_item,
                             {
                                 "viewclass": "OneLineListItem",
+                                "text": "Reply",
+                                "height": dp(40),
+                                "on_release": gen_reply(message_source.decode("utf-8"), item)
+                            },
+                            {
+                                "viewclass": "OneLineListItem",
                                 "text": "Copy",
                                 "height": dp(40),
                                 "on_release": gen_copy(message_source.decode("utf-8"), item)
@@ -1271,6 +1293,12 @@ class Messages():
                         if telemeter != None:
                             dm_items = [
                                 details_item,
+                                {
+                                    "viewclass": "OneLineListItem",
+                                    "text": "Reply",
+                                    "height": dp(40),
+                                    "on_release": gen_reply(message_source.decode("utf-8"), item)
+                                },
                                 {
                                     "viewclass": "OneLineListItem",
                                     "text": "Copy",
@@ -1294,6 +1322,12 @@ class Messages():
                         else:
                             dm_items = [
                                 details_item,
+                                {
+                                    "viewclass": "OneLineListItem",
+                                    "text": "Reply",
+                                    "height": dp(40),
+                                    "on_release": gen_reply(message_source.decode("utf-8"), item)
+                                },
                                 {
                                     "viewclass": "OneLineListItem",
                                     "text": "Copy",
@@ -1441,6 +1475,26 @@ MDScreen:
                 _no_ripple_effect: True
                 background_normal: ""
                 background_down: ""            
+
+        BoxLayout:
+            id: reply_indicator
+            orientation: "horizontal"
+            padding: [dp(16), dp(4), dp(16), dp(4)]
+            spacing: dp(8)
+            size_hint_y: None
+            height: dp(0)
+            opacity: 0
+
+            MDLabel:
+                text: "Replying to message..."
+                font_style: "Caption"
+                size_hint_x: 1
+
+            MDIconButton:
+                icon: "close"
+                size_hint: None, None
+                size: dp(32), dp(32)
+                on_release: root.reply_clear_action()
 
         BoxLayout:
             id: message_input_part

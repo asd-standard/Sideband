@@ -2157,6 +2157,12 @@ class SidebandApp(MDApp):
 
             else:
                 msg_content = self.messages_view.ids.message_text.text
+                if self.messages_view.reply_to_content:
+                    quoted = self.messages_view.reply_to_content
+                    if len(quoted) > 42:
+                        quoted = quoted[:42] + "..."
+                    msg_content = "> \"" + quoted + "\"\nReply:\n\n" + msg_content
+                    self.messages_view.reply_clear_action()
                 if msg_content == "":
                     msg_content = " "
 
