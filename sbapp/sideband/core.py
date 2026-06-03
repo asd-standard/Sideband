@@ -255,6 +255,19 @@ class SidebandCore():
 
         os.environ["TELEMETER_GEOID_PATH"] = os.path.join(self.asset_dir, "geoids")
 
+        restore_flag = os.path.join(self.app_dir, "restore_pending")
+        restore_temp = os.path.join(self.app_dir, "app_storage_restore")
+        if os.path.isdir(restore_flag):
+            import shutil
+            if os.path.isdir(restore_temp):
+                app_storage_path = os.path.join(self.app_dir, "app_storage")
+                if os.path.isdir(app_storage_path):
+                    shutil.rmtree(app_storage_path)
+                shutil.move(restore_temp, app_storage_path)
+            else:
+                RNS.log("Restore flag was set but no backup data found, cleaning up", RNS.LOG_WARNING)
+            shutil.rmtree(restore_flag)
+
         if not os.path.isdir(os.path.join(self.app_dir, "app_storage")):
             os.makedirs(os.path.join(self.app_dir, "app_storage"))
 

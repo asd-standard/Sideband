@@ -1,6 +1,8 @@
 import time
 import RNS
 
+import os
+import shutil
 import base64
 import threading
 from kivy.metrics import dp,sp
@@ -9,6 +11,7 @@ from kivy.core.clipboard import Clipboard
 from kivymd.uix.button import MDRectangleFlatButton
 from kivymd.uix.dialog import MDDialog
 from kivymd.toast import toast
+from kivymd.uix.filemanager import MDFileManager
 from kivy.effects.scroll import ScrollEffect
 
 if RNS.vendor.platformutils.get_platform() == "android":
@@ -71,6 +74,102 @@ class Keys():
         self.keys_screen.ids.keys_backup.disabled = True
         toast("Creating backup...")
         threading.Thread(target=self._profile_backup_job, daemon=True).start()
+
+    def profile_restore_action(self, sender=None):
+        import plyer
+        perm_ok = True
+        if RNS.vendor.platformutils.is_android():
+            perm_ok = self.app.check_storage_permission()
+            path = plyer.storagepath.get_downloads_dir()
+        else:
+            path = os.path.expanduser("~")
+
+        if perm_ok and path != None:
+            self.file_manager = MDFileManager(
+                exit_manager=self._profile_restore_fm_exit,
+                select_path=self._profile_restore_fm_select,
+                preview=False)
+            self.file_manager.show(path)
+        else:
+            toast("Storage permission required to select backup file")
+
+    def _profile_restore_fm_exit(self, *args):
+        self.file_manager.close()
+
+    def _profile_restore_fm_select(self, path):
+        threading.Thread(target=self._profile_restore_job, args=(path,), daemon=True).start()
+
+    def _profile_restore_job(self, backup_path):
+        import tarfile
+        from kivy.clock import Clock
+
+        def ui_toast(msg):
+            Clock.schedule_once(lambda dt: toast(msg))
+
+        app_dir = self.app.sideband.app_dir
+
+        try:
+            ui_toast("Restoring profile backup...")
+
+            restore_temp = os.path.join(app_dir, "app_storage_restore")
+            if os.path.isdir(restore_temp):
+                shutil.rmtree(restore_temp)
+            os.makedirs(restore_temp)
+
+            tar = tarfile.open(backup_path, "r:gz")
+
+            PREFIX = "Sideband Backup/"
+            for member in tar.getmembers():
+                name = member.name
+
+                if name == "Sideband Backup":
+                    continue
+
+                if not name.startswith(PREFIX):
+                    continue
+
+                relative = name[len(PREFIX):]
+                if not relative:
+                    continue
+
+                target = os.path.join(restore_temp, relative)
+
+                if member.isdir():
+                    os.makedirs(target, exist_ok=True)
+                elif member.isfile():
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with tar.extractfile(member) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+
+            tar.close()
+
+            restore_flag = os.path.join(app_dir, "restore_pending")
+            if not os.path.isdir(restore_flag):
+                os.makedirs(restore_flag)
+
+            def show_dialog(dt):
+                ok_button = MDRectangleFlatButton(text="OK",font_size=dp(18))
+                dialog = MDDialog(
+                    title="Profile Restored",
+                    text="Your Sideband profile has been restored.\n\nPlease restart the app for the changes to take effect.",
+                    buttons=[ok_button])
+                def dl_ok(s):
+                    dialog.dismiss()
+                    def shutdown():
+                        self.app.stop_service()
+                        def stop_app(dt):
+                            self.app.stop()
+                        Clock.schedule_once(stop_app, 0.5)
+                    threading.Thread(target=shutdown, daemon=True).start()
+                ok_button.bind(on_release=dl_ok)
+                dialog.open()
+            Clock.schedule_once(show_dialog, 0.5)
+
+        except Exception as e:
+            RNS.log(f"Profile restore failed: {e}", RNS.LOG_ERROR)
+            def show_error(dt):
+                toast(f"Restore failed: {e}")
+            Clock.schedule_once(show_error, 0.1)
 
     def identity_display_action(self, sender=None):
         yes_button = MDRectangleFlatButton(text="OK",font_size=dp(18))
@@ -203,12 +302,11 @@ MDScreen:
                     id: keys_restore
                     icon: "home-import-outline"
                     text: "Restore Sideband Profile"
-                    disabled: True
                     padding: [dp(0), dp(14), dp(0), dp(14)]
                     icon_size: dp(24)
                     font_size: dp(16)
                     size_hint: [1.0, None]
-                    on_release: root.app.profile_backup_action(self)
+                    on_release: root.app.profile_restore_action(self)
 
                 MDLabel:
                     id: keys_info

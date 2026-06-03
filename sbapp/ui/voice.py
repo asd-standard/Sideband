@@ -53,7 +53,7 @@ class Voice():
         self.listed_output_devices = []
         self.listed_input_devices = []
         self.listed_ringer_devices = []
-        self.call_profile = Profiles.DEFAULT_PROFILE
+        self.call_profile = Profiles.QUALITY_HIGH
     
         if not self.app.root.ids.screen_manager.has_screen("voice_screen"):
             self.screen = Builder.load_string(layout_voice_screen)

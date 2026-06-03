@@ -37,7 +37,7 @@ android.ndk = 25b
 android.skip_update = False
 android.accept_sdk_license = True
 android.release_artifact = apk
-android.archs = x86_64
+android.archs = arm64-v8a
 #android.archs = arm64-v8a,armeabi-v7a
 #android.logcat_filters = *:S python:D
 

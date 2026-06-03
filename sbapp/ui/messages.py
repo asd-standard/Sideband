@@ -1494,7 +1494,7 @@ MDScreen:
                 icon: "close"
                 size_hint: None, None
                 size: dp(32), dp(32)
-                on_release: root.reply_clear_action()
+                on_release: root.app.messages_view.reply_clear_action()
 
         BoxLayout:
             id: message_input_part
