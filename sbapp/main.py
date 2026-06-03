@@ -1549,10 +1549,13 @@ class SidebandApp(MDApp):
                 if incoming_call:
                     self.sideband.setstate("voice.incoming_call", None)
                     dn = multilingual_markup(escape_markup(str(incoming_call)).encode("utf-8")).decode("utf-8")
-                    toast(f"Call from {dn}", duration=4)
+                    self.show_incoming_call_dialog(dn)
 
                 if ended_call:
                     self.sideband.setstate("voice.ongoing_ended", False)
+                    if hasattr(self, "incoming_call_dialog") and self.incoming_call_dialog:
+                        self.incoming_call_dialog.dismiss()
+                        self.incoming_call_dialog = None
                     toast("Call ended", duration=4)
 
         if self.root.ids.screen_manager.current == "messages_screen":
@@ -2052,6 +2055,29 @@ class SidebandApp(MDApp):
         yes_button.bind(on_release=dl_yes)
         no_button.bind(on_release=dl_no)
 
+    def show_incoming_call_dialog(self, caller_name):
+        if hasattr(self, "incoming_call_dialog") and self.incoming_call_dialog:
+            self.incoming_call_dialog.dismiss()
+
+        answer_button = MDRectangleFlatButton(text="Answer",font_size=dp(18), theme_text_color="Custom", line_color=self.color_accept, text_color=self.color_accept)
+        reject_button = MDRectangleFlatButton(text="Reject",font_size=dp(18), theme_text_color="Custom", line_color=self.color_reject, text_color=self.color_reject)
+
+        self.incoming_call_dialog = MDDialog(title="Incoming Voice Call", text=f"[b]{caller_name}[/b] is calling...", buttons=[ reject_button, answer_button ], auto_dismiss=False)
+
+        def dl_answer(s):
+            self.incoming_call_dialog.dismiss()
+            self.incoming_call_dialog = None
+            self.voice_answer_action()
+
+        def dl_reject(s):
+            self.incoming_call_dialog.dismiss()
+            self.incoming_call_dialog = None
+            self.voice_reject_action()
+
+        answer_button.bind(on_release=dl_answer)
+        reject_button.bind(on_release=dl_reject)
+        self.incoming_call_dialog.open()
+
     def conversation_action(self, sender):
         if sender.conv_type == self.sideband.CONV_P2P:
             context_dest = sender.sb_uid
@@ -2159,9 +2185,9 @@ class SidebandApp(MDApp):
                 msg_content = self.messages_view.ids.message_text.text
                 if self.messages_view.reply_to_content:
                     quoted = self.messages_view.reply_to_content
-                    if len(quoted) > 42:
-                        quoted = quoted[:42] + "..."
-                    msg_content = "> \"" + quoted + "\"\nReply:\n\n" + msg_content
+                    if len(quoted) > 32:
+                        quoted = quoted[:32] + "..."
+                    msg_content = "> \"" + quoted + "\"\n\nReply:\n" + msg_content
                     self.messages_view.reply_clear_action()
                 if msg_content == "":
                     msg_content = " "
@@ -2565,8 +2591,8 @@ class SidebandApp(MDApp):
 
         if not hasattr(self, "ptt_recorder") or self.ptt_recorder == None:
             self.ptt_recording_path = os.path.join(self.sideband.rec_cache, "ptt_recording.ogg")
-            self.ptt_recorder = FileRecorder(self.ptt_recording_path, profile=Opus.PROFILE_VOICE_HIGH, gain=2.0,
-                                             skip=0.075, ease_in=0.125, filters=[BandPass(300, 8500), AGC(target_level=-15.0)])
+            self.ptt_recorder = FileRecorder(self.ptt_recording_path, profile=Opus.PROFILE_VOICE_HIGH, gain=1.0,
+                                             skip=0.075, ease_in=0.125, filters=[BandPass(300, 8500), AGC(target_level=-9.0)])
 
         self.message_attach_action(attach_type="audio", nodialog=True)
         el_button = self.messages_view.ids.message_ptt_button
@@ -2674,8 +2700,8 @@ class SidebandApp(MDApp):
         def a_rec_action(sender):
             if not self.rec_dialog.recording and not self.rec_dialog.recorder:
                 self.sideband.ui_started_recording()
-                self.rec_dialog.recorder = FileRecorder(self.rec_dialog.file_path, profile=Opus.PROFILE_VOICE_HIGH, gain=2.0,
-                                                        skip=0.075, ease_in=0.125, filters=[BandPass(300, 8500), AGC(target_level=-15.0)])
+                self.rec_dialog.recorder = FileRecorder(self.rec_dialog.file_path, profile=Opus.PROFILE_VOICE_HIGH, gain=1.0,
+                                                        skip=0.075, ease_in=0.125, filters=[BandPass(300, 8500), AGC(target_level=-9.0)])
                 RNS.log("Starting recording...", RNS.LOG_DEBUG) # TODO: Remove
                 self.rec_dialog.recording = True
                 el = self.rec_dialog.rec_item.children[0].children[0]
