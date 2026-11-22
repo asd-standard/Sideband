@@ -4435,7 +4435,7 @@ class SidebandCore():
         else:
             lxm_limit = self.default_lxm_limit
 
-        self.message_router = LXMF.LXMRouter(identity = self.identity, storagepath = self.lxmf_storage, autopeer = True, delivery_limit = lxm_limit)
+        self.message_router = LXMF.LXMRouter(identity = self.identity, storagepath = self.lxmf_storage, autopeer = True, delivery_limit = lxm_limit, defer_startup_jobs=True)
         self.message_router.register_delivery_callback(self.lxmf_delivery)
 
         configured_stamp_cost = None
@@ -4457,6 +4457,10 @@ class SidebandCore():
         self.rns_dir = RNS.Reticulum.configdir
 
         self.update_active_lxmf_propagation_node()
+
+        if hasattr(self.message_router, "start_jobs"):
+            self.message_router.start_jobs()
+            RNS.log("Started deferred LXMF router jobs", RNS.LOG_DEBUG)
 
     def update_active_lxmf_propagation_node(self):
         if self.config["lxmf_propagation_node"] != None and self.config["lxmf_propagation_node"] != "":
