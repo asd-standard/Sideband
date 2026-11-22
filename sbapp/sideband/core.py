@@ -125,6 +125,8 @@ class SidebandCore():
     DEFAULT_APPEARANCE = ["account", [0,0,0,1], [1,1,1,1]]
 
     LOG_DEQUE_MAXLEN = 128
+    # Increment this when adding indices to __db_migrate_indices()
+    DB_INDICES_VERSION = 1
 
     ERROR_INVALID_BLE_MTU = 0x20
 
@@ -2121,6 +2123,37 @@ class SidebandCore():
         dbc.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_state_property ON state(property)")
         dbc.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_dest_context ON conv(dest_context)")
         db.commit()
+        self.__db_migrate_indices()
+
+    def __db_migrate_indices(self):
+        # The message table grows over time, and the UI polls the
+        # active conversation every 1.5 seconds. Without these indices,
+        # each poll performs a full table scan and sort. The migration
+        # is idempotent and only runs in the service (or a standalone
+        # instance), so index creation never blocks the UI process.
+        if not (self.is_service or self.is_standalone):
+            return
+
+        db = self.__db_connect()
+        dbc = db.cursor()
+
+        dbc.execute("PRAGMA user_version")
+        version = dbc.fetchone()[0]
+        if version >= self.DB_INDICES_VERSION:
+            return
+
+        started = time.time()
+        try:
+            dbc.execute("CREATE INDEX IF NOT EXISTS idx_lxm_dest_rx_ts ON lxm(dest, rx_ts)")
+            dbc.execute("CREATE INDEX IF NOT EXISTS idx_lxm_source_rx_ts ON lxm(source, rx_ts)")
+            dbc.execute("CREATE INDEX IF NOT EXISTS idx_announce_received ON announce(received)")
+            dbc.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_dest_context_ts ON telemetry(dest_context, ts)")
+            dbc.execute(f"PRAGMA user_version = {self.DB_INDICES_VERSION}")
+            db.commit()
+            RNS.log(f"Database index migration completed in {RNS.prettytime(time.time()-started)}", RNS.LOG_NOTICE)
+        except Exception as e:
+            RNS.log(f"Database index migration failed: {e}", RNS.LOG_ERROR)
+            RNS.trace_exception(e)
 
     def _db_inittelemetry(self):
         db = self.__db_connect()

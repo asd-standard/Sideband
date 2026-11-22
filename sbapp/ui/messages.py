@@ -99,6 +99,8 @@ class Messages():
         self.earliest_message_timestamp = time.time()
         self.reply_to_content = None
         self.loading_earlier_messages = False
+        self.initial_load_complete = False
+        self.has_earlier_messages = True
         self.list = None
         self.widgets = []
         self.send_error_dialog = None
@@ -114,6 +116,10 @@ class Messages():
         self.added_item_hashes = []
         self.added_messages = 0
         self.latest_message_timestamp = None
+        self.earliest_message_timestamp = time.time()
+        self.loading_earlier_messages = False
+        self.initial_load_complete = False
+        self.has_earlier_messages = True
         self.widgets = []
 
         self.update()
@@ -126,12 +132,20 @@ class Messages():
 
 
     def load_more(self, dt):
-        for new_message in self.app.sideband.list_messages(self.context_dest, before=self.earliest_message_timestamp,limit=5):
+        earlier_messages = self.app.sideband.list_messages(self.context_dest, before=self.earliest_message_timestamp,limit=5)
+        for new_message in earlier_messages:
             self.new_messages.append(new_message)
 
-        if len(self.new_messages) > 0:
+        if len(earlier_messages) > 0:
             self.loading_earlier_messages = True
-            self.list.remove_widget(self.load_more_button)
+            if self.load_more_button in self.list.children:
+                self.list.remove_widget(self.load_more_button)
+            if len(earlier_messages) < 5:
+                self.has_earlier_messages = False
+        else:
+            self.has_earlier_messages = False
+            if self.load_more_button in self.list.children:
+                self.list.remove_widget(self.load_more_button)
 
     def message_details_dialog(self, lxm_hash):
         ss = int(dp(16))
@@ -255,8 +269,6 @@ class Messages():
         for new_message in self.app.sideband.list_messages(self.context_dest, after=self.latest_message_timestamp,limit=limit):
             self.new_messages.append(new_message)
 
-        self.db_message_count = self.app.sideband.count_messages(self.context_dest)
-
         if self.load_more_button == None:
             self.load_more_button = MDRectangleFlatIconButton(
                 icon="message-text-clock-outline",
@@ -281,7 +293,15 @@ class Messages():
         c_ts = time.time()
         if len(self.new_messages) > 0: self.update_widget()
 
-        if (len(self.added_item_hashes) < self.db_message_count) and not self.load_more_button in self.list.children:
+        if not self.initial_load_complete:
+            # Only needed to decide whether "Load earlier messages"
+            # should be shown. Query it once when the conversation is
+            # opened, instead of on every jobs() poll.
+            message_count = self.app.sideband.count_messages(self.context_dest) or 0
+            self.has_earlier_messages = message_count > len(self.added_item_hashes)
+            self.initial_load_complete = True
+
+        if self.has_earlier_messages and not self.load_more_button in self.list.children:
             self.list.add_widget(self.load_more_button, len(self.list.children))
 
         if self.app.sideband.config["classic_message_colors"]:
@@ -1402,6 +1422,7 @@ class Messages():
 
         self.added_messages += len(self.new_messages)
         self.new_messages = []
+        self.loading_earlier_messages = False
 
     def get_widget(self):
         return self.list
