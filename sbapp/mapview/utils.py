@@ -1,8 +1,17 @@
 # coding=utf-8
 
-__all__ = ["clamp", "haversine", "get_zoom_for_radius"]
+__all__ = [
+    "clamp",
+    "haversine",
+    "get_zoom_for_radius",
+    "to_quad_key",
+    "tile_url",
+    "tile_cache_fn",
+]
 
+import os
 from math import asin, cos, pi, radians, sin, sqrt
+from random import choice
 
 from kivy.core.window import Window
 from kivy.metrics import dp
@@ -10,6 +19,54 @@ from kivy.metrics import dp
 
 def clamp(x, minimum, maximum):
     return max(minimum, min(x, maximum))
+
+
+def to_quad_key(x, y, z):
+    """Converts an XYZ tile coordinate to the quadkey used by VirtualEarth"""
+    quad_key = []
+    i = z
+    while i > 0:
+        digit = 0
+        mask = 1 << (i - 1)
+        if (x & mask) != 0:
+            digit += 1
+        if (y & mask) != 0:
+            digit += 2
+        quad_key.append(str(digit))
+        i -= 1
+    return "".join(quad_key)
+
+
+def tile_url(map_source, x, y, z):
+    """
+    Returns the upstream URL for the given tile, taking subdomains and
+    quadkey-based sources into account. ``y`` must be given in the same
+    top-origin XYZ convention that ``map_source``'s URL templates expect.
+    """
+    if map_source.quad_key:
+        return map_source.url.format(
+            q=to_quad_key(x, y, z),
+            s=choice(map_source.subdomains),
+        )
+    else:
+        return map_source.url.format(
+            z=z,
+            x=x,
+            y=y,
+            s=choice(map_source.subdomains),
+        )
+
+
+def tile_cache_fn(map_source, x, y, z):
+    """Returns the cache file path for the given tile"""
+    fn = map_source.cache_fmt.format(
+        image_ext=map_source.image_ext,
+        cache_key=map_source.cache_key,
+        zoom=z,
+        tile_x=x,
+        tile_y=y,
+    )
+    return os.path.join(map_source.cache_dir, fn)
 
 
 def haversine(lon1, lat1, lon2, lat2):

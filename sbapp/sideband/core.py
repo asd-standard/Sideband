@@ -785,6 +785,8 @@ class SidebandCore():
         
         if not "map_storage_path" in self.config:                      self.config["map_storage_path"] = None
         if not "map_storage_file" in self.config:                      self.config["map_storage_file"] = None
+        if not "map_download_path" in self.config:                     self.config["map_download_path"] = None
+        if not "map_download_zoom" in self.config:                     self.config["map_download_zoom"] = 0
 
         if not "voice_enabled" in self.config:                         self.config["voice_enabled"] = False
         if not "voice_output" in self.config:                          self.config["voice_output"] = None

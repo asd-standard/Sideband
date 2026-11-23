@@ -424,11 +424,19 @@ else:
     from kivy.metrics import dp, sp
     from kivymd.uix.button import MDRectangleFlatButton
     from kivymd.uix.dialog import MDDialog
+    from kivymd.uix.progressbar import MDProgressBar
     from kivymd.color_definitions import colors
     from sideband.sense import Telemeter
     from mapview import CustomMapMarker
     from mapview.mbtsource import MBTilesMapSource
     from mapview.source import MapSource
+    from mapview.prefetch import (
+        MAX_PREFETCH_TILES,
+        TilePrefetcher,
+        count_tiles,
+        estimate_bytes,
+        get_osm_download_source,
+    )
     from kivy.utils import escape_markup
     import webbrowser
     import kivy.core.image
@@ -507,6 +515,83 @@ if RNS.vendor.platformutils.is_android():
 else:
     ll_ot = 0.4
     ll_ft = 0.275
+
+if not args.daemon:
+    Builder.load_string("""
+<MapDownloadContent>:
+    orientation: "vertical"
+    spacing: dp(12)
+    size_hint_y: None
+    height: self.minimum_height
+    padding: [dp(24), dp(12), dp(24), dp(12)]
+
+    MDLabel:
+        text: "This section of the map will be downloaded from OpenStreetMap and saved as an MBTiles file, so it can be used offline."
+        size_hint_y: None
+        text_size: self.width, None
+        height: self.texture_size[1]
+
+    MDBoxLayout:
+        orientation: "horizontal"
+        size_hint_y: None
+        height: dp(48)
+        MDLabel:
+            text: "Maximum zoom"
+            size_hint_x: 0.6
+        MDIconButton:
+            id: zoom_out_button
+            icon: "minus"
+            pos_hint: {"center_y": 0.5}
+        MDLabel:
+            id: zoom_value
+            text: "Zoom 0 - 0"
+            halign: "center"
+            size_hint_x: 0.5
+        MDIconButton:
+            id: zoom_in_button
+            icon: "plus"
+            pos_hint: {"center_y": 0.5}
+
+    MDLabel:
+        id: area_value
+        text: ""
+        size_hint_y: None
+        text_size: self.width, None
+        height: self.texture_size[1]
+
+    MDLabel:
+        id: size_value
+        text: ""
+        size_hint_y: None
+        text_size: self.width, None
+        height: self.texture_size[1]
+
+    MDLabel:
+        id: source_value
+        text: ""
+        size_hint_y: None
+        text_size: self.width, None
+        height: self.texture_size[1]
+
+    MDLabel:
+        text: "Please note the OpenStreetMap tile usage policy. Do not download large areas you do not actually need."
+        size_hint_y: None
+        text_size: self.width, None
+        height: self.texture_size[1]
+
+<MapDownloadProgressContent>:
+    orientation: "vertical"
+    spacing: dp(12)
+    size_hint_y: None
+    height: self.minimum_height
+    padding: [dp(24), dp(12), dp(24), dp(24)]
+
+    MDProgressBar:
+        id: progress_bar
+        value: 0
+        size_hint_y: None
+        height: dp(8)
+""")
 
 class SidebandApp(MDApp):
     STARTING = 0x00
@@ -5004,13 +5089,24 @@ class SidebandApp(MDApp):
     ######################################
 
     def map_fm_got_path(self, path):
-        self.map_fm_exited()
+        self.map_fm_exited(update=False)
         try:
+            # Validate the file before committing to it, so a bad file
+            # leaves the previous map and source selection untouched.
             source = MBTilesMapSource(path)
-            self.map_update_source()
             self.sideband.config["map_storage_file"] = path
             self.sideband.config["map_storage_path"] = str(pathlib.Path(path).parent.resolve())
+
+            # Selecting a map explicitly means using it, so switch to the
+            # offline source rather than relying on the previous choice.
+            self.offline_source = source
+            self.sideband.config["map_use_offline"] = True
+            self.sideband.config["map_use_online"]  = False
             self.sideband.save_configuration()
+            if hasattr(self, "map_settings_apply_states"):
+                self.map_settings_apply_states(False, True)
+            self.map_layer = "offline"
+            self.map_update_source(source)
 
             if RNS.vendor.platformutils.is_android():
                 toast("Using \""+os.path.basename(path)+"\" as offline map")
@@ -5043,10 +5139,11 @@ class SidebandApp(MDApp):
             self.map_settings_load_states()
             self.map_update_source()
 
-    def map_fm_exited(self, *args):
+    def map_fm_exited(self, *args, update=True):
         self.manager_open = False
         self.file_manager.close()
-        self.map_update_source()
+        if update:
+            self.map_update_source()
 
     def map_select_file_action(self, sender=None):
         perm_ok = False
@@ -5110,6 +5207,7 @@ class SidebandApp(MDApp):
                 ate_dialog.open()
 
     def map_get_offline_source(self):
+        current_map_path = None
         if self.offline_source != None:
             return self.offline_source
         else:
@@ -5126,6 +5224,7 @@ class SidebandApp(MDApp):
                 self.sideband.config["map_storage_file"] = None
                 self.sideband.config["map_use_offline"] = False
                 self.sideband.config["map_use_online"] = True
+                self.offline_source = None
                 self.sideband.save_configuration()
                 self.map_settings_load_states()
 
@@ -5141,30 +5240,104 @@ class SidebandApp(MDApp):
 
         return source
 
+    map_source_switching = False
+
     def map_update_source(self, source=None):
+        # Re-entrancy guard. A failed offline map load resets the config,
+        # rebinds the settings toggles and calls back in here, which would
+        # otherwise re-centre the map a second time unexpectedly.
+        if self.map_source_switching:
+            return
+
         ns = source or self.map_get_source()
-        if self.map != None:
-            
-            if source != None:
-                maxz = source.max_zoom
-                minz = source.min_zoom
-                if self.map.zoom > maxz:
-                    mz = maxz; px, py = self.map_get_zoom_center(); self.map.set_zoom_at(mz, px, py)
-                
-                if self.map.zoom < minz:
-                    mz = minz; px, py = self.map_get_zoom_center(); self.map.set_zoom_at(mz, px, py)
+        if self.map == None:
+            return
 
-                m = self.map
-                nlat = self.map.lat
-                nlon = self.map.lon
-                if nlat < -89: nlat = -89
-                if nlat > 89: nlat = 89
-                if nlon < -179: nlon = -179
-                if nlon > 179: nlon = 179
-                self.map.center_on(nlat,nlon)
+        if ns == None or ns is self.map.map_source:
+            return
 
+        self.map_source_switching = True
+        try:
+            # Capture the geographic position while the *old* source is
+            # still attached, so it can be restored in the new source's
+            # projection. The source must be swapped before any position
+            # is computed, since center_on() and the zoom helpers use the
+            # currently attached source to convert lat/lon to offsets.
+            nlat = self.map.lat
+            nlon = self.map.lon
+            nzoom = self.map.zoom
+            if nlat < -89: nlat = -89
+            if nlat > 89: nlat = 89
+            if nlon < -179: nlon = -179
+            if nlon > 179: nlon = 179
 
+            # Swap the source first. on_map_source() clamps the zoom to the
+            # new source's range, drops the old tiles and re-renders.
             self.map.map_source = ns
+
+            nzoom = max(ns.min_zoom, min(nzoom, ns.max_zoom))
+
+            # If the new source is geographically restricted (MBTiles files
+            # carry a bounds box), and the current position falls outside
+            # it, the bounds constraint in the map view would only be able
+            # to resolve itself by shoving the viewport back to an edge of
+            # the area. Centre on the area itself instead, so the result is
+            # predictable and can be explained to the user.
+            clamped = False
+            if ns.bounds and not self.map_position_in_bounds(nlat, nlon, ns.bounds):
+                bminlat, bminlon, bmaxlat, bmaxlon = ns.bounds
+                nlat = (bminlat + bmaxlat) / 2.0
+                nlon = (bminlon + bmaxlon) / 2.0
+                if nzoom < ns.min_zoom: nzoom = ns.min_zoom
+                if nzoom > ns.max_zoom: nzoom = ns.max_zoom
+                clamped = True
+
+            # Restore the position, now interpreted using the new source.
+            # The zoom is set directly rather than through set_zoom_at(),
+            # which anchors on window/scatter coordinates that are only
+            # meaningful for a source that has not been swapped. That made
+            # it leave the view somewhere other than the target position.
+            # center_on() below fully determines the position, so it only
+            # needs the final zoom to be in place first.
+            if int(nzoom) != int(self.map._zoom):
+                self.map._zoom = nzoom
+                self.map.zoom = nzoom
+
+            self.map.center_on(nlat, nlon)
+            self.map.trigger_update(True)
+
+            # If the area covered by the new source is smaller than the
+            # viewport on either axis, the view has to show the whole area
+            # and cannot keep the requested point centred. In that case the
+            # map view centres on the area itself, which is also what a user
+            # expects, so tell them instead of letting it look like a glitch.
+            if not clamped and ns.bounds and self.map_area_smaller_than_view(ns):
+                clamped = True
+
+            if clamped:
+                def notify(dt):
+                    toast("Showing the center of the map area")
+                Clock.schedule_once(notify, 0.2)
+
+        finally:
+            self.map_source_switching = False
+
+    def map_position_in_bounds(self, lat, lon, bounds):
+        minlat, minlon, maxlat, maxlon = bounds
+        return (lon >= minlon and lon <= maxlon and lat >= minlat and lat <= maxlat)
+
+    def map_area_smaller_than_view(self, source):
+        """True if the source's bounds area is smaller than the map viewport"""
+        try:
+            m = self.map
+            zoom = m._zoom
+            s = m._scale or 1.0
+            bminlat, bminlon, bmaxlat, bmaxlon = source.bounds
+            w = abs(source.get_x(zoom, bmaxlon) - source.get_x(zoom, bminlon))
+            h = abs(source.get_y(zoom, bminlat) - source.get_y(zoom, bmaxlat))
+            return w <= (m.width / s) or h <= (m.height / s)
+        except Exception:
+            return False
 
     def map_layers_action(self, sender=None):
         try:
@@ -5196,6 +5369,328 @@ class SidebandApp(MDApp):
                 self.map_update_source(source)
         except Exception as e:
             RNS.log("Error while switching map layer: "+str(e), RNS.LOG_ERROR)
+
+    ### Map section download
+
+    map_download_default_zx = 2
+    map_download_zoom_step  = 2
+
+    def map_download_section_action(self, sender=None):
+        try:
+            if self.map == None:
+                return
+
+            if hasattr(self, "map_prefetcher") and self.map_prefetcher != None:
+                if self.map_prefetcher.is_running():
+                    self.map_download_reopen_progress()
+                    return
+
+            bbox = self.map.get_bbox()
+            zoom = int(self.map.zoom)
+            source = get_osm_download_source(self.map_cache)
+            if zoom > source.max_zoom: zoom = source.max_zoom
+            if zoom < source.min_zoom: zoom = source.min_zoom
+
+            max_zoom = self.sideband.config["map_download_zoom"]
+            if max_zoom < zoom:
+                max_zoom = min(zoom + self.map_download_default_zx, source.max_zoom)
+
+            self.map_download_bbox = bbox
+            self.map_download_source = source
+            self.map_download_zoom = zoom
+            self.map_download_max_zoom = max_zoom
+
+            start_button = MDRectangleFlatButton(
+                text="Download",
+                font_size=dp(18),
+                on_release=self.map_download_start,
+            )
+            self.map_download_start_button = start_button
+
+            self.map_download_dialog = MDDialog(
+                title="Download Map Section",
+                type="custom",
+                content_cls=MapDownloadContent(),
+                buttons=[
+                    MDRectangleFlatButton(
+                        text="Cancel",
+                        font_size=dp(18),
+                        on_release=lambda x: self.map_download_dialog.dismiss(),
+                    ),
+                    start_button,
+                ],
+            )
+
+            def zoom_in(sender=None):
+                # Upper bound is the source's max zoom; the lower bound is
+                # the zoom the viewport was captured at, so every level in
+                # between covers the same geographic area.
+                if self.map_download_max_zoom < source.max_zoom:
+                    self.map_download_max_zoom += 1
+                    self.map_download_update_summary()
+
+            def zoom_out(sender=None):
+                if self.map_download_max_zoom > self.map_download_zoom:
+                    self.map_download_max_zoom -= 1
+                    self.map_download_update_summary()
+
+            content = self.map_download_dialog.content_cls
+            content.ids.zoom_in_button.bind(on_release=zoom_in)
+            content.ids.zoom_out_button.bind(on_release=zoom_out)
+            self.map_download_update_summary()
+            self.map_download_dialog.open()
+
+        except Exception as e:
+            RNS.log("Error while preparing map download: "+str(e), RNS.LOG_ERROR)
+            toast("Could not prepare map download")
+
+    def map_download_update_summary(self):
+        try:
+            content = self.map_download_dialog.content_cls
+            source = self.map_download_source
+            bbox = self.map_download_bbox
+            min_z = self.map_download_zoom
+            max_z = self.map_download_max_zoom
+
+            tiles = count_tiles(source, bbox, min_z, max_z)
+            size  = RNS.prettysize(estimate_bytes(tiles))
+            lat = "%.5f" % ((bbox[0] + bbox[2]) / 2)
+            lon = "%.5f" % ((bbox[1] + bbox[3]) / 2)
+
+            content.ids.zoom_value.text = "Zoom %d – %d" % (min_z, max_z)
+            content.ids.area_value.text = "Center %s, %s" % (lat, lon)
+            content.ids.size_value.text = "%d tiles, approx. %s" % (tiles, size)
+
+            start_button = self.map_download_start_button
+            if tiles == 0:
+                content.ids.size_value.text = "No tiles for this area"
+                start_button.disabled = True
+            elif tiles > MAX_PREFETCH_TILES:
+                content.ids.size_value.text = "%d tiles, approx. %s (max %d)" % (tiles, size, MAX_PREFETCH_TILES)
+                start_button.disabled = True
+            else:
+                start_button.disabled = False
+
+            if self.map_layer == "ve":
+                content.ids.source_value.text = "OpenStreetMap (active layer is VirtualEarth)"
+            else:
+                content.ids.source_value.text = "OpenStreetMap"
+
+        except Exception as e:
+            RNS.log("Error while updating map download summary: "+str(e), RNS.LOG_ERROR)
+
+    def map_download_start(self, sender=None):
+        try:
+            bbox = self.map_download_bbox
+            min_z = self.map_download_zoom
+            max_z = self.map_download_max_zoom
+            source = self.map_download_source
+
+            self.map_download_dialog.dismiss()
+            self.sideband.config["map_download_zoom"] = max_z
+            self.sideband.save_configuration()
+
+            def begin_with_path(path):
+                if path == None:
+                    toast("No writable location")
+                    return
+
+                if not os.path.isdir(path):
+                    try:
+                        os.makedirs(path)
+                    except Exception as e:
+                        RNS.log("Could not create map download directory: "+str(e), RNS.LOG_ERROR)
+                        toast("Could not create download directory")
+                        return
+
+                if not os.access(path, os.W_OK):
+                    toast("Directory is not writable")
+                    return
+
+                lat = (bbox[0] + bbox[2]) / 2
+                lon = (bbox[1] + bbox[3]) / 2
+                fn = "sideband_%.4f_%.4f_z%d-%d.mbtiles" % (lat, lon, min_z, max_z)
+                out_path = os.path.join(path, fn)
+                self.sideband.config["map_download_path"] = path
+                self.sideband.save_configuration()
+                self.map_download_run(source, bbox, min_z, max_z, out_path)
+
+            self.map_download_pick_path(begin_with_path)
+
+        except Exception as e:
+            RNS.log("Error while starting map download: "+str(e), RNS.LOG_ERROR)
+            toast("Could not start download")
+
+    def map_download_pick_path(self, callback):
+        perm_ok = False
+        path    = None
+        last_path = self.sideband.config["map_download_path"]
+        if last_path != None and os.path.isdir(last_path) and os.access(last_path, os.W_OK):
+            perm_ok = True
+            path = last_path
+        elif RNS.vendor.platformutils.is_android():
+            perm_ok = self.check_storage_permission()
+            if perm_ok:
+                if self.sideband.config["map_storage_path"] != None:
+                    path = self.sideband.config["map_storage_path"]
+                else:
+                    path = primary_external_storage_path()
+        else:
+            perm_ok = True
+            path = os.path.expanduser("~")
+
+        state = {"done": False}
+
+        def finish(result):
+            if state["done"]: return
+            state["done"] = True
+            callback(result)
+
+        def fm_exited(*args):
+            self.manager_open = False
+            self.file_manager.close()
+            finish(None)
+
+        def fm_selected(selection):
+            self.manager_open = False
+            self.file_manager.close()
+            if type(selection) == list: selection = selection[0]
+            if os.path.isdir(selection): finish(selection)
+            else: finish(os.path.dirname(selection))
+
+        if perm_ok and path != None:
+            try:
+                self.file_manager = MDFileManager(
+                    exit_manager=fm_exited,
+                    select_path=fm_selected,
+                )
+                self.file_manager.ext = [".mbtiles"]
+                self.file_manager.show(path)
+                return
+            except Exception as e:
+                RNS.log("Error while opening directory selector: "+str(e), RNS.LOG_ERROR)
+
+        finish(None)
+
+    def map_download_run(self, source, bbox, min_z, max_z, out_path):
+        def progress(pf):
+            self.map_download_update_progress("Downloading Map Section",
+                "%d / %d tiles\n%s" % (pf.downloaded, pf.total, os.path.basename(pf.mbtiles_path)),
+                pf.downloaded, pf.total)
+
+        def finished(pf):
+            self.map_prefetcher = None
+            self.map_download_close_progress()
+
+            if pf.failed > 0:
+                RNS.log("Map download finished with %d failed tiles" % pf.failed, RNS.LOG_WARNING)
+
+            if pf.downloaded == 0:
+                toast("Map download did not complete")
+                return
+
+            state = {"dlg": None}
+
+            def use_map(sender=None):
+                if state["dlg"] != None:
+                    state["dlg"].dismiss()
+                self.map_fm_got_path(pf.mbtiles_path)
+
+            def keep_map(sender=None):
+                if state["dlg"] != None:
+                    state["dlg"].dismiss()
+
+            if RNS.vendor.platformutils.is_android():
+                toast("Map section downloaded")
+                use_map()
+            else:
+                use_button = MDRectangleFlatButton(text="Use Now", font_size=dp(18))
+                keep_button = MDRectangleFlatButton(text="Close", font_size=dp(18))
+                state["dlg"] = MDDialog(
+                    title="Download Complete",
+                    text="%d tiles were saved to\n%s\n\nThis section can now be used as the offline map." % (pf.downloaded, os.path.basename(pf.mbtiles_path)),
+                    buttons=[use_button, keep_button],
+                )
+                use_button.bind(on_release=use_map)
+                keep_button.bind(on_release=keep_map)
+                state["dlg"].open()
+
+        def error(pf):
+            self.map_prefetcher = None
+            self.map_download_close_progress()
+            toast("Could not create map file")
+
+        self.map_prefetcher = TilePrefetcher(
+            source, bbox, min_z, max_z, out_path,
+            progress=progress,
+            finished=finished,
+            error=error,
+        )
+
+        self.map_download_total = self.map_prefetcher.total
+        self.map_download_update_progress("Downloading Map Section",
+            "Preparing %d tiles..." % self.map_download_total, 0, self.map_download_total)
+        self.map_prefetcher.start()
+
+    def map_download_update_progress(self, title, text, value, maximum):
+        try:
+            if not hasattr(self, "map_progress_dialog") or self.map_progress_dialog == None:
+                self.map_progress_dialog = MDDialog(
+                    title=title,
+                    text=text,
+                    type="custom",
+                    content_cls=MapDownloadProgressContent(),
+                    buttons=[
+                        MDRectangleFlatButton(
+                            text="Stop",
+                            font_size=dp(18),
+                            on_release=lambda x: self.map_download_cancel(),
+                        ),
+                    ],
+                    auto_dismiss=False,
+                )
+                self.map_progress_dialog.open()
+            else:
+                if self.map_progress_dialog.title != title:
+                    self.map_progress_dialog.title = title
+                if self.map_progress_dialog.text != text:
+                    self.map_progress_dialog.text = text
+
+            progress_bar = self.map_progress_dialog.content_cls.ids.progress_bar
+            if maximum > 0:
+                progress_bar.value = int((value / float(maximum)) * 100)
+                if progress_bar.value >= 100 and value < maximum:
+                    progress_bar.value = 99
+            else:
+                progress_bar.value = 0
+
+        except Exception as e:
+            RNS.log("Error while updating map download progress: "+str(e), RNS.LOG_ERROR)
+
+    def map_download_close_progress(self):
+        try:
+            if hasattr(self, "map_progress_dialog") and self.map_progress_dialog != None:
+                self.map_progress_dialog.dismiss()
+        except Exception as e:
+            pass
+        self.map_progress_dialog = None
+
+    def map_download_reopen_progress(self):
+        try:
+            if hasattr(self, "map_prefetcher") and self.map_prefetcher != None:
+                pf = self.map_prefetcher
+                self.map_download_update_progress("Downloading Map Section",
+                    "%d / %d tiles\n%s" % (pf.downloaded, pf.total, os.path.basename(pf.mbtiles_path)),
+                    pf.downloaded, pf.total)
+        except Exception as e:
+            RNS.log("Error while reopening map download progress: "+str(e), RNS.LOG_ERROR)
+
+    def map_download_cancel(self):
+        try:
+            if hasattr(self, "map_prefetcher") and self.map_prefetcher != None:
+                self.map_prefetcher.cancel()
+        except Exception as e:
+            RNS.log("Error while cancelling map download: "+str(e), RNS.LOG_ERROR)
 
     map_nav_divisor = 12
     map_nav_zoom = 0.25
@@ -5315,43 +5810,107 @@ class SidebandApp(MDApp):
 
     def map_settings_load_states(self):
         if self.map_settings_screen != None:
-            self.map_settings_screen.ids.map_use_online.active = self.sideband.config["map_use_online"]
-            self.map_settings_screen.ids.map_use_offline.active = self.sideband.config["map_use_offline"]
-            self.map_settings_screen.ids.map_storage_external.active = self.sideband.config["map_storage_external"]
+            online  = bool(self.sideband.config["map_use_online"])
+            offline = bool(self.sideband.config["map_use_offline"])
+
+            # Exactly one of the two sources must be active. Older configs,
+            # and failed offline map loads, can leave both switches in the
+            # same state, so normalise to a single valid choice here.
+            if online == offline:
+                offline = self.sideband.config["map_storage_file"] != None
+                online  = not offline
+
+            ids = self.map_settings_screen.ids
+            if ids.map_use_online.active != online:
+                ids.map_use_online.active = online
+            if ids.map_use_offline.active != offline:
+                ids.map_use_offline.active = offline
+            ids.map_storage_external.active = self.sideband.config["map_storage_external"]
+
+            if (self.sideband.config["map_use_online"] != online
+                or self.sideband.config["map_use_offline"] != offline):
+                self.sideband.config["map_use_online"]  = online
+                self.sideband.config["map_use_offline"] = offline
+                self.sideband.save_configuration()
 
     def map_settings_init(self):
         self.map_settings_load_states()
+        map_online  = self.map_settings_screen.ids.map_use_online
+        map_offline = self.map_settings_screen.ids.map_use_offline
+        map_ext     = self.map_settings_screen.ids.map_storage_external
+
+        # "Use online map sources" and "Use offline map source" are two
+        # states of a single choice: exactly one of them is always active.
+        # Offline is preferred when both are requested, since a specific
+        # MBTiles file is a more explicit choice than the default online
+        # sources. Setting the switches from here would re-enter the
+        # handlers, so the "active" properties are written through the
+        # guard below instead.
+        syncing = {"in_progress": False, "pending": None}
+
+        def apply_states(online, offline):
+            """Writes the switch and config states without re-entering"""
+            syncing["in_progress"] = True
+            try:
+                if map_online.active != online:   map_online.active = online
+                if map_offline.active != offline: map_offline.active = offline
+            finally:
+                syncing["in_progress"] = False
+            self.sideband.config["map_use_online"]  = online
+            self.sideband.config["map_use_offline"] = offline
+
         def map_settings_save(sender=None, event=None):
-            self.sideband.config["map_storage_external"] = self.map_settings_screen.ids.map_storage_external.active
-            self.sideband.config["map_use_online"] = self.map_settings_screen.ids.map_use_online.active
-            self.sideband.config["map_use_offline"] = self.map_settings_screen.ids.map_use_offline.active
+            self.sideband.config["map_storage_external"] = map_ext.active
+            self.sideband.config["map_use_online"]  = map_online.active
+            self.sideband.config["map_use_offline"] = map_offline.active
             self.sideband.save_configuration()
+
+        def refresh_source():
+            map_settings_save()
+            self.map_update_source()
 
         def external_toggle(sender=None, event=None):
             self.sideband.config["map_storage_path"] = None
             map_settings_save()
 
-        def offline_toggle(sender=None, event=None):
-            if self.map_settings_screen.ids.map_use_offline.active:
-                # self.map_settings_screen.ids.map_use_online.active = False
-                if self.sideband.config["map_storage_file"] == None:
-                    self.map_select_file_action()
-            else:
-                self.map_settings_screen.ids.map_use_online.active = True
-            map_settings_save(); self.map_update_source()
-
         def online_toggle(sender=None, event=None):
-            if self.map_settings_screen.ids.map_use_online.active:
-                # self.map_settings_screen.ids.map_use_offline.active = False
-                pass
+            if syncing["in_progress"]:
+                return
+
+            if map_online.active:
+                # Turning online on turns offline off
+                apply_states(True, False)
+                refresh_source()
             else:
-                self.map_settings_screen.ids.map_use_offline.active = True
-            map_settings_save(); self.map_update_source()
+                # Refuse to turn online off while it is the active source
+                apply_states(True, False)
+                refresh_source()
 
+        def offline_toggle(sender=None, event=None):
+            if syncing["in_progress"]:
+                return
 
-        self.map_settings_screen.ids.map_use_offline.bind(active=offline_toggle)
-        self.map_settings_screen.ids.map_use_online.bind(active=online_toggle)
-        self.map_settings_screen.ids.map_storage_external.bind(active=external_toggle)
+            if map_offline.active:
+                if self.sideband.config["map_storage_file"] == None:
+                    # No map file to use yet: pick one, and only switch
+                    # offline mode on once a file has actually loaded.
+                    apply_states(True, False)
+                    refresh_source()
+                    self.map_select_file_action()
+                else:
+                    # Turning offline on turns online off
+                    apply_states(False, True)
+                    refresh_source()
+            else:
+                # Refuse to turn offline off while it is the active source
+                apply_states(False, True)
+                refresh_source()
+
+        self.map_settings_apply_states = apply_states
+
+        map_offline.bind(active=offline_toggle)
+        map_online.bind(active=online_toggle)
+        map_ext.bind(active=external_toggle)
 
     def map_settings_action(self, sender=None, direction="left"):
         if not self.root.ids.screen_manager.has_screen("map_settings_screen"):
@@ -5846,6 +6405,13 @@ def run():
     else:
         ExceptionManager.add_handler(SidebandExceptionHandler())
         SidebandApp().run()
+
+if not args.daemon:
+    class MapDownloadContent(BoxLayout):
+        pass
+
+    class MapDownloadProgressContent(BoxLayout):
+        pass
 
 if __name__ == "__main__":
     run()

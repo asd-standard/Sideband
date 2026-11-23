@@ -114,6 +114,9 @@ class MapSource:
         (0, 0) is located at the top left.
         """
         lat = clamp(-lat, MIN_LATITUDE, MAX_LATITUDE)
+        # The mercator computation is undefined at the poles, where the
+        # tangent tends to infinity, so keep latitude strictly inside.
+        lat = clamp(lat, -89.9999, 89.9999)
         lat = lat * pi / 180.0
         return (
             (1.0 - log(tan(lat) + 1.0 / cos(lat)) / pi) / 2.0 * pow(2.0, zoom)

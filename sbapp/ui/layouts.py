@@ -1043,6 +1043,7 @@ MDScreen:
                 #['format-list-bulleted-type', lambda x: root.app.map_object_list(self)], # Object List
                 ['arrow-down-bold-hexagon-outline', lambda x: root.app.telemetry_request_action(self)], # Download telemetry
                 ['upload-lock', lambda x: root.app.telemetry_send_update(self)], # Send telemetry update
+                ['download', lambda x: root.app.map_download_section_action(self)], # Download map section
                 ['layers', lambda x: root.app.map_layers_action(self)],
                 ['wrench-cog', lambda x: root.app.map_settings_action(self)],
                 ['crosshairs-gps', lambda x: root.app.map_own_location_action(self)],
