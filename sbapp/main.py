@@ -714,6 +714,7 @@ class SidebandApp(MDApp):
 
         self.check_permissions()
         self.check_bluetooth_permissions()
+        self.check_location_permissions()
         self.start_service()
         
         Clock.schedule_interval(self.jobs, 1.5)
@@ -1228,15 +1229,170 @@ class SidebandApp(MDApp):
 
     def has_location_permissions(self):
         if RNS.vendor.platformutils.is_android():
-            if RNS.vendor.platformutils.is_android():
-                if check_permission("android.permission.ACCESS_COARSE_LOCATION") and check_permission("android.permission.ACCESS_FINE_LOCATION"): return True
-                else: return False
+            return (check_permission("android.permission.ACCESS_COARSE_LOCATION")
+                    and check_permission("android.permission.ACCESS_FINE_LOCATION"))
+        return False
 
-    def request_location_permissions(self):
-        if not self.has_location_permissions():
-            if RNS.vendor.platformutils.is_android():
-                RNS.log("Requesting location permission", RNS.LOG_DEBUG)
-                request_permissions(["android.permission.ACCESS_COARSE_LOCATION", "android.permission.ACCESS_FINE_LOCATION"])
+    def has_background_location_permissions(self):
+        if RNS.vendor.platformutils.is_android():
+            return (self.has_location_permissions()
+                    and check_permission("android.permission.ACCESS_BACKGROUND_LOCATION"))
+        return False
+
+    def check_location_permissions(self):
+        if RNS.vendor.platformutils.get_platform() == "android":
+            foreground = self.has_location_permissions()
+            background = self.has_background_location_permissions()
+            self.sideband.setpersistent("permissions.location", foreground)
+            self.sideband.setpersistent("permissions.location_background", background)
+            if foreground:
+                RNS.log("Have location permissions", RNS.LOG_DEBUG)
+            else:
+                RNS.log("Do not have location permissions", RNS.LOG_DEBUG)
+            if not background:
+                RNS.log("Do not have background location permissions", RNS.LOG_DEBUG)
+        else:
+            self.sideband.setpersistent("permissions.location", True)
+            self.sideband.setpersistent("permissions.location_background", True)
+
+    def request_location_permissions(self, callback=None):
+        """
+        Requests foreground location permissions, then background location
+        permissions once foreground access has been granted. Android does
+        not allow both to be requested at the same time, and background
+        location cannot be granted from a dialog at all from Android 11.
+        """
+        if not RNS.vendor.platformutils.is_android():
+            if callback: callback(True)
+            return
+
+        def finish(granted):
+            self.check_location_permissions()
+            if callback: callback(granted)
+
+        if self.has_location_permissions():
+            self.request_background_location_permissions(callback=finish)
+            return
+
+        RNS.log("Requesting location permissions", RNS.LOG_DEBUG)
+        try:
+            request_permissions(
+                ["android.permission.ACCESS_COARSE_LOCATION",
+                 "android.permission.ACCESS_FINE_LOCATION"],
+                callback=lambda permissions, grants: Clock.schedule_once(
+                    lambda dt: finish(self.has_location_permissions()), 0.25
+                ),
+            )
+        except Exception as e:
+            RNS.log("Error while requesting location permissions: "+str(e), RNS.LOG_ERROR)
+            # Fall back to checking the state after the user has had a
+            # chance to respond to the system prompt.
+            Clock.schedule_once(lambda dt: finish(self.has_location_permissions()), 2.0)
+
+    def request_background_location_permissions(self, callback=None):
+        """
+        Requests "Allow all the time" access, which is required for the
+        situation map and telemetry to keep working while the screen is
+        off. From Android 11 this can only be granted from the app's
+        settings page, so the user is sent there instead of being shown
+        a dialog that would silently do nothing.
+        """
+        if not RNS.vendor.platformutils.is_android():
+            if callback: callback(True)
+            return
+
+        if self.has_background_location_permissions():
+            if callback: callback(True)
+            return
+
+        if android_api_version >= 30:
+            def open_settings(sender=None):
+                try:
+                    Intent = autoclass('android.content.Intent')
+                    Settings = autoclass('android.provider.Settings')
+                    Uri = autoclass('android.net.Uri')
+                    pIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    pIntent.setData(Uri.fromParts("package", "io.unsigned.sideband", None))
+                    mActivity.startActivity(pIntent)
+                except Exception as e:
+                    RNS.log("Error while opening app settings: "+str(e), RNS.LOG_ERROR)
+
+                # The user returns to a different activity, so re-check
+                # the state after they have had time to change it.
+                def recheck(dt):
+                    self.check_location_permissions()
+                    if callback: callback(self.has_background_location_permissions())
+                Clock.schedule_once(recheck, 3.0)
+
+            ok_button = MDRectangleFlatButton(text="Open Settings", font_size=dp(18), theme_text_color="Custom", line_color=self.color_accept, text_color=self.color_accept)
+            no_button = MDRectangleFlatButton(text="Not Now", font_size=dp(18))
+            dialog = MDDialog(
+                title="Background Location",
+                text="To keep showing your position on the situation map, and include it in telemetry updates when the screen is off, Sideband needs background location access.\n\nOn this Android version this must be enabled from the app settings, by choosing \"Allow all the time\" for Location.\n\nSideband only ever uses location locally, and only includes it in updates you explicitly choose to send.",
+                buttons=[ no_button, ok_button ],
+            )
+            def dl_ok(s):
+                dialog.dismiss()
+                Clock.schedule_once(open_settings, 0.15)
+            def dl_no(s):
+                dialog.dismiss()
+                if callback: callback(False)
+            ok_button.bind(on_release=dl_ok)
+            no_button.bind(on_release=dl_no)
+            dialog.open()
+
+        else:
+            RNS.log("Requesting background location permission", RNS.LOG_DEBUG)
+            try:
+                request_permissions(
+                    ["android.permission.ACCESS_BACKGROUND_LOCATION"],
+                    callback=lambda permissions, grants: Clock.schedule_once(
+                        lambda dt: callback(self.has_background_location_permissions()) if callback else None, 0.25
+                    ),
+                )
+            except Exception as e:
+                RNS.log("Error while requesting background location permission: "+str(e), RNS.LOG_ERROR)
+                Clock.schedule_once(lambda dt: callback(self.has_background_location_permissions()) if callback else None, 2.0)
+
+    def request_location_permission_explained(self, callback=None):
+        """
+        Shows an explanation of why location access is needed before
+        handing over to the system permission prompt.
+        """
+        if not RNS.vendor.platformutils.is_android():
+            if callback: callback(True)
+            return
+
+        if self.has_location_permissions() and self.has_background_location_permissions():
+            if callback: callback(True)
+            return
+
+        def grant_access(sender=None):
+            dialog.dismiss()
+            def req(dt):
+                self.request_location_permissions(callback=on_result)
+            Clock.schedule_once(req, 0.15)
+
+        def not_now(sender=None):
+            dialog.dismiss()
+            self.sideband.setpersistent("permissions.location_asked", True)
+            if callback: callback(self.has_location_permissions())
+
+        def on_result(granted):
+            self.sideband.setpersistent("permissions.location_asked", True)
+            if granted: self.request_background_location_permissions()
+            if callback: callback(self.has_location_permissions())
+
+        yes_button = MDRectangleFlatButton(text="Grant Access", font_size=dp(18), theme_text_color="Custom", line_color=self.color_accept, text_color=self.color_accept)
+        no_button = MDRectangleFlatButton(text="Not Now", font_size=dp(18))
+        dialog = MDDialog(
+            title="Location Access",
+            text="Sideband uses your location to show your position on the situation map, and to include it in telemetry updates.\n\nBackground access is also needed, so your position keeps working while the screen is off.\n\nLocation is only used locally on this device, and is only ever shared in updates you explicitly choose to send.",
+            buttons=[ no_button, yes_button ],
+        )
+        yes_button.bind(on_release=grant_access)
+        no_button.bind(on_release=not_now)
+        dialog.open()
 
     def check_bluetooth_permissions(self):
         if RNS.vendor.platformutils.get_platform() == "android":
@@ -1287,6 +1443,11 @@ class SidebandApp(MDApp):
 
     def request_permissions(self):
         self.request_notifications_permission()
+        # Location is requested after a short delay, so the notifications
+        # prompt is not immediately replaced by a second dialog.
+        if RNS.vendor.platformutils.is_android():
+            if not self.sideband.getpersistent("permissions.location_asked"):
+                Clock.schedule_once(lambda dt: self.request_location_permission_explained(), 2.5)
 
     def request_notifications_permission(self):
         if RNS.vendor.platformutils.get_platform() == "android":
@@ -1384,7 +1545,6 @@ class SidebandApp(MDApp):
                 yes_button.bind(on_release=dl_yes)
                 no_button.bind(on_release=dl_no)
             self.permission_dialog.open()
-
         else:
             self.check_bluetooth_permissions()
             if not self.sideband.getpersistent("permissions.bluetooth"): self.request_bluetooth_permissions()
@@ -6007,12 +6167,24 @@ class SidebandApp(MDApp):
             self.map_show(location)
 
     def map_own_location_action(self, context_dest):
+        # Without location permission the position can never be known, so
+        # ask for it instead of reporting that the location is unknown.
+        if RNS.vendor.platformutils.is_android() and not self.has_location_permissions():
+            def after_permission(granted):
+                if granted: self.map_own_location_action(context_dest)
+            self.request_location_permission_explained(callback=after_permission)
+            return
+
         self.sideband.update_telemetry()
         location = self.sideband.peer_location(self.sideband.lxmf_destination.hash)
         if not location:
+            if RNS.vendor.platformutils.is_android() and not self.sideband.getpersistent("permissions.location"):
+                error_text = "Sideband does not have location permission, so your position cannot be determined.\n\nGrant location access, and make sure the location sensor is enabled under Telemetry."
+            else:
+                error_text = "Your location is currently unknown. Make sure the relevant telemetry sensors and permissions have been enabled."
             self.location_error_dialog = MDDialog(
                 title="No Location",
-                text="Your location is currently unknown. Make sure the relevant telemetry sensors and permissions have been enabled.",
+                text=error_text,
                 buttons=[
                     MDRectangleFlatButton(
                         text="OK",
