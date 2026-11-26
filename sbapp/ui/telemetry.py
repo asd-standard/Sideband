@@ -447,9 +447,9 @@ class Telemetry():
 
         if self.sensors_screen.ids.telemetry_s_location.active:
             if RNS.vendor.platformutils.is_android():
-                if not check_permission("android.permission.ACCESS_COARSE_LOCATION") or not check_permission("android.permission.ACCESS_FINE_LOCATION"):
+                if not self.app.has_location_permissions():
                     RNS.log("Requesting location permission", RNS.LOG_DEBUG)
-                    request_permissions(["android.permission.ACCESS_COARSE_LOCATION", "android.permission.ACCESS_FINE_LOCATION"])
+                    Clock.schedule_once(lambda dt: self.app.request_location_permissions(), 0.15)
 
         self.sensors_save()
 

@@ -97,7 +97,10 @@ class Messages():
         self.added_messages = 0
         self.latest_message_timestamp = None
         self.earliest_message_timestamp = time.time()
+        self.reply_to_content = None
         self.loading_earlier_messages = False
+        self.initial_load_complete = False
+        self.has_earlier_messages = True
         self.list = None
         self.widgets = []
         self.send_error_dialog = None
@@ -113,17 +116,36 @@ class Messages():
         self.added_item_hashes = []
         self.added_messages = 0
         self.latest_message_timestamp = None
+        self.earliest_message_timestamp = time.time()
+        self.loading_earlier_messages = False
+        self.initial_load_complete = False
+        self.has_earlier_messages = True
         self.widgets = []
 
         self.update()
 
+
+    def reply_clear_action(self):
+        self.reply_to_content = None
+        self.ids.reply_indicator.opacity = 0
+        self.ids.reply_indicator.height = dp(0)
+
+
     def load_more(self, dt):
-        for new_message in self.app.sideband.list_messages(self.context_dest, before=self.earliest_message_timestamp,limit=5):
+        earlier_messages = self.app.sideband.list_messages(self.context_dest, before=self.earliest_message_timestamp,limit=5)
+        for new_message in earlier_messages:
             self.new_messages.append(new_message)
 
-        if len(self.new_messages) > 0:
+        if len(earlier_messages) > 0:
             self.loading_earlier_messages = True
-            self.list.remove_widget(self.load_more_button)
+            if self.load_more_button in self.list.children:
+                self.list.remove_widget(self.load_more_button)
+            if len(earlier_messages) < 5:
+                self.has_earlier_messages = False
+        else:
+            self.has_earlier_messages = False
+            if self.load_more_button in self.list.children:
+                self.list.remove_widget(self.load_more_button)
 
     def message_details_dialog(self, lxm_hash):
         ss = int(dp(16))
@@ -247,8 +269,6 @@ class Messages():
         for new_message in self.app.sideband.list_messages(self.context_dest, after=self.latest_message_timestamp,limit=limit):
             self.new_messages.append(new_message)
 
-        self.db_message_count = self.app.sideband.count_messages(self.context_dest)
-
         if self.load_more_button == None:
             self.load_more_button = MDRectangleFlatIconButton(
                 icon="message-text-clock-outline",
@@ -273,7 +293,15 @@ class Messages():
         c_ts = time.time()
         if len(self.new_messages) > 0: self.update_widget()
 
-        if (len(self.added_item_hashes) < self.db_message_count) and not self.load_more_button in self.list.children:
+        if not self.initial_load_complete:
+            # Only needed to decide whether "Load earlier messages"
+            # should be shown. Query it once when the conversation is
+            # opened, instead of on every jobs() poll.
+            message_count = self.app.sideband.count_messages(self.context_dest) or 0
+            self.has_earlier_messages = message_count > len(self.added_item_hashes)
+            self.initial_load_complete = True
+
+        if self.has_earlier_messages and not self.load_more_button in self.list.children:
             self.list.add_widget(self.load_more_button, len(self.list.children))
 
         if self.app.sideband.config["classic_message_colors"]:
@@ -924,6 +952,14 @@ class Messages():
 
                     return x
 
+                def gen_reply(msgtxt, item):
+                    def x():
+                        self.reply_to_content = msgtxt
+                        self.ids.reply_indicator.opacity = 1
+                        self.ids.reply_indicator.height = dp(44)
+                        item.dmenu.dismiss()
+                    return x
+
                 def gen_save_image(item):
                     if RNS.vendor.platformutils.is_android():
                         def x():
@@ -1256,6 +1292,12 @@ class Messages():
                             retry_item,
                             {
                                 "viewclass": "OneLineListItem",
+                                "text": "Reply",
+                                "height": dp(40),
+                                "on_release": gen_reply(message_source.decode("utf-8"), item)
+                            },
+                            {
+                                "viewclass": "OneLineListItem",
                                 "text": "Copy",
                                 "height": dp(40),
                                 "on_release": gen_copy(message_source.decode("utf-8"), item)
@@ -1271,6 +1313,12 @@ class Messages():
                         if telemeter != None:
                             dm_items = [
                                 details_item,
+                                {
+                                    "viewclass": "OneLineListItem",
+                                    "text": "Reply",
+                                    "height": dp(40),
+                                    "on_release": gen_reply(message_source.decode("utf-8"), item)
+                                },
                                 {
                                     "viewclass": "OneLineListItem",
                                     "text": "Copy",
@@ -1294,6 +1342,12 @@ class Messages():
                         else:
                             dm_items = [
                                 details_item,
+                                {
+                                    "viewclass": "OneLineListItem",
+                                    "text": "Reply",
+                                    "height": dp(40),
+                                    "on_release": gen_reply(message_source.decode("utf-8"), item)
+                                },
                                 {
                                     "viewclass": "OneLineListItem",
                                     "text": "Copy",
@@ -1368,6 +1422,7 @@ class Messages():
 
         self.added_messages += len(self.new_messages)
         self.new_messages = []
+        self.loading_earlier_messages = False
 
     def get_widget(self):
         return self.list
@@ -1441,6 +1496,26 @@ MDScreen:
                 _no_ripple_effect: True
                 background_normal: ""
                 background_down: ""            
+
+        BoxLayout:
+            id: reply_indicator
+            orientation: "horizontal"
+            padding: [dp(16), dp(4), dp(16), dp(4)]
+            spacing: dp(8)
+            size_hint_y: None
+            height: dp(0)
+            opacity: 0
+
+            MDLabel:
+                text: "Replying to message..."
+                font_style: "Caption"
+                size_hint_x: 1
+
+            MDIconButton:
+                icon: "close"
+                size_hint: None, None
+                size: dp(32), dp(32)
+                on_release: root.app.messages_view.reply_clear_action()
 
         BoxLayout:
             id: message_input_part

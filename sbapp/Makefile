@@ -15,6 +15,9 @@ cleanlibs:
 	
 cleanall: clean cleanlibs
 
+NDK_TOOLCHAIN := $(HOME)/.buildozer/android/platform/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin
+NDK_CLANG := $(firstword $(wildcard $(NDK_TOOLCHAIN)/aarch64-linux-android24-clang $(NDK_TOOLCHAIN)/x86_64-linux-android24-clang))
+
 pacthfiles: patchsdl injectxml patchpycodec2
 
 patchsdl:
@@ -49,7 +52,7 @@ injectxml:
 	
 injectlibs:
 	@(echo Injecting native libs...)
-	cp .buildozer/android/platform/build-arm64-v8a/dists/sideband/_python_bundle__arm64-v8a/_python_bundle/site-packages/LXST/filterlib.so LXST/
+	$(NDK_CLANG) -shared -fPIC -O2 -o LXST/filterlib.so LXST/Filters.c -lm
 	@(sleep 1)
 
 debug:

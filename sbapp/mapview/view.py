@@ -848,7 +848,9 @@ class MapView(Widget):
         # if the map_source have any constraints, apply them here.
         map_source = self.map_source
         zoom = self._zoom
-        min_lon, min_lat, max_lon, max_lat = map_source.bounds
+        # MapSource.bounds is (min_lat, min_lon, max_lat, max_lon), as
+        # stored in MBTiles metadata, not (min_lon, min_lat, ...).
+        min_lat, min_lon, max_lat, max_lon = map_source.bounds
         xmin = map_source.get_x(zoom, min_lon)
         xmax = map_source.get_x(zoom, max_lon)
         ymin = map_source.get_y(zoom, min_lat)
@@ -859,18 +861,33 @@ class MapView(Widget):
         oxmin, oymin = self._scatter.to_local(self.x, self.y)
         oxmax, oymax = self._scatter.to_local(self.right, self.top)
         s = self._scale
-        cxmin = oxmin - dx
-        if cxmin < xmin:
-            self._scatter.x += (cxmin - xmin) * s
-        cymin = oymin - dy
-        if cymin < ymin:
-            self._scatter.y += (cymin - ymin) * s
-        cxmax = oxmax - dx
-        if cxmax > xmax:
-            self._scatter.x -= (xmax - cxmax) * s
-        cymax = oymax - dy
-        if cymax > ymax:
-            self._scatter.y -= (ymax - cymax) * s
+
+        # When the allowed area is smaller than the viewport on an axis,
+        # the two edge clamps fight each other, so center the area instead.
+        # The map is offset by (scatter position - delta), which is what
+        # the clamping branches below operate on, so the target scatter
+        # position is the area centre minus that offset.
+        plain_w = self.width / s
+        plain_h = self.height / s
+        if (xmax - xmin) <= plain_w:
+            self._scatter.x = ((xmin + xmax) / 2.0) - (oxmin - dx) - (plain_w / 2.0)
+        else:
+            cxmin = oxmin - dx
+            if cxmin < xmin:
+                self._scatter.x += (cxmin - xmin) * s
+            cxmax = oxmax - dx
+            if cxmax > xmax:
+                self._scatter.x -= (xmax - cxmax) * s
+
+        if (ymax - ymin) <= plain_h:
+            self._scatter.y = ((ymin + ymax) / 2.0) - (oymin - dy) - (plain_h / 2.0)
+        else:
+            cymin = oymin - dy
+            if cymin < ymin:
+                self._scatter.y += (cymin - ymin) * s
+            cymax = oymax - dy
+            if cymax > ymax:
+                self._scatter.y -= (ymax - cymax) * s
 
     def on__pause(self, instance, value):
         if not value:

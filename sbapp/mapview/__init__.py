@@ -15,6 +15,15 @@ from mapview.view import (
     MapView,
     MarkerMapLayer,
 )
+from mapview.prefetch import (
+    MAX_PREFETCH_TILES,
+    TilePrefetcher,
+    count_tiles,
+    create_mbtiles,
+    estimate_bytes,
+    get_osm_download_source,
+    xyz_range_for_bbox,
+)
 
 __all__ = [
     "Coordinate",
@@ -25,4 +34,11 @@ __all__ = [
     "MapLayer",
     "MarkerMapLayer",
     "MapMarkerPopup",
+    "TilePrefetcher",
+    "MAX_PREFETCH_TILES",
+    "count_tiles",
+    "create_mbtiles",
+    "estimate_bytes",
+    "get_osm_download_source",
+    "xyz_range_for_bbox",
 ]

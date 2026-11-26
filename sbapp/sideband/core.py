@@ -125,6 +125,8 @@ class SidebandCore():
     DEFAULT_APPEARANCE = ["account", [0,0,0,1], [1,1,1,1]]
 
     LOG_DEQUE_MAXLEN = 128
+    # Increment this when adding indices to __db_migrate_indices()
+    DB_INDICES_VERSION = 1
 
     ERROR_INVALID_BLE_MTU = 0x20
 
@@ -254,6 +256,19 @@ class SidebandCore():
         self.notif_icon_black  = os.path.join(self.asset_dir, "notification_icon_black.png")
 
         os.environ["TELEMETER_GEOID_PATH"] = os.path.join(self.asset_dir, "geoids")
+
+        restore_flag = os.path.join(self.app_dir, "restore_pending")
+        restore_temp = os.path.join(self.app_dir, "app_storage_restore")
+        if os.path.isdir(restore_flag):
+            import shutil
+            if os.path.isdir(restore_temp):
+                app_storage_path = os.path.join(self.app_dir, "app_storage")
+                if os.path.isdir(app_storage_path):
+                    shutil.rmtree(app_storage_path)
+                shutil.move(restore_temp, app_storage_path)
+            else:
+                RNS.log("Restore flag was set but no backup data found, cleaning up", RNS.LOG_WARNING)
+            shutil.rmtree(restore_flag)
 
         if not os.path.isdir(os.path.join(self.app_dir, "app_storage")):
             os.makedirs(os.path.join(self.app_dir, "app_storage"))
@@ -770,6 +785,8 @@ class SidebandCore():
         
         if not "map_storage_path" in self.config:                      self.config["map_storage_path"] = None
         if not "map_storage_file" in self.config:                      self.config["map_storage_file"] = None
+        if not "map_download_path" in self.config:                     self.config["map_download_path"] = None
+        if not "map_download_zoom" in self.config:                     self.config["map_download_zoom"] = 0
 
         if not "voice_enabled" in self.config:                         self.config["voice_enabled"] = False
         if not "voice_output" in self.config:                          self.config["voice_output"] = None
@@ -2108,6 +2125,37 @@ class SidebandCore():
         dbc.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_state_property ON state(property)")
         dbc.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_dest_context ON conv(dest_context)")
         db.commit()
+        self.__db_migrate_indices()
+
+    def __db_migrate_indices(self):
+        # The message table grows over time, and the UI polls the
+        # active conversation every 1.5 seconds. Without these indices,
+        # each poll performs a full table scan and sort. The migration
+        # is idempotent and only runs in the service (or a standalone
+        # instance), so index creation never blocks the UI process.
+        if not (self.is_service or self.is_standalone):
+            return
+
+        db = self.__db_connect()
+        dbc = db.cursor()
+
+        dbc.execute("PRAGMA user_version")
+        version = dbc.fetchone()[0]
+        if version >= self.DB_INDICES_VERSION:
+            return
+
+        started = time.time()
+        try:
+            dbc.execute("CREATE INDEX IF NOT EXISTS idx_lxm_dest_rx_ts ON lxm(dest, rx_ts)")
+            dbc.execute("CREATE INDEX IF NOT EXISTS idx_lxm_source_rx_ts ON lxm(source, rx_ts)")
+            dbc.execute("CREATE INDEX IF NOT EXISTS idx_announce_received ON announce(received)")
+            dbc.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_dest_context_ts ON telemetry(dest_context, ts)")
+            dbc.execute(f"PRAGMA user_version = {self.DB_INDICES_VERSION}")
+            db.commit()
+            RNS.log(f"Database index migration completed in {RNS.prettytime(time.time()-started)}", RNS.LOG_NOTICE)
+        except Exception as e:
+            RNS.log(f"Database index migration failed: {e}", RNS.LOG_ERROR)
+            RNS.trace_exception(e)
 
     def _db_inittelemetry(self):
         db = self.__db_connect()
@@ -4389,7 +4437,7 @@ class SidebandCore():
         else:
             lxm_limit = self.default_lxm_limit
 
-        self.message_router = LXMF.LXMRouter(identity = self.identity, storagepath = self.lxmf_storage, autopeer = True, delivery_limit = lxm_limit)
+        self.message_router = LXMF.LXMRouter(identity = self.identity, storagepath = self.lxmf_storage, autopeer = True, delivery_limit = lxm_limit, defer_startup_jobs=True)
         self.message_router.register_delivery_callback(self.lxmf_delivery)
 
         configured_stamp_cost = None
@@ -4411,6 +4459,10 @@ class SidebandCore():
         self.rns_dir = RNS.Reticulum.configdir
 
         self.update_active_lxmf_propagation_node()
+
+        if hasattr(self.message_router, "start_jobs"):
+            self.message_router.start_jobs()
+            RNS.log("Started deferred LXMF router jobs", RNS.LOG_DEBUG)
 
     def update_active_lxmf_propagation_node(self):
         if self.config["lxmf_propagation_node"] != None and self.config["lxmf_propagation_node"] != "":

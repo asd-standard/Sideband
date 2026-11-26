@@ -19,7 +19,7 @@ class LXSTRecipe(PythonRecipe):
         shprint(sh.rm, '-rf', build_dir)
         shprint(sh.mkdir, build_dir)
 
-        srcs = ('/home/markqvist/Information/Source/LXST/LXST', '/home/markqvist/Information/Source/LXST/setup.py', '/home/markqvist/Information/Source/LXST/README.md')
+        srcs = ('../../../LXST/LXST', '../../../LXST/setup.py', '../../../LXST/README.md')
 
         for filename in srcs:
             print(f"Copy {join(self.get_recipe_dir(), filename)} to {build_dir}")
